@@ -166,7 +166,7 @@ def optimize_unit_points(
     optimizer_sigma = sigma / math.sqrt(2.0)
     sigma_unit = optimizer_sigma / n_per_axis
 
-    scale = (0.5)**dims * step_scale
+    scale = 0.25 * step_scale
     if sigma > 1.0:
         scale /= sigma * sigma
 
