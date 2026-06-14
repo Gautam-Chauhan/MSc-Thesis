@@ -61,6 +61,23 @@ def frequency_grid(
     return torch.stack(frequencies, dim=1)
 
 
+def _frequency_grid_from_flat_ids(
+    flat_ids: torch.Tensor,
+    size: int,
+    dims: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return integer frequency vectors for a chunk of flattened indices."""
+
+    base = 2 * size + 1
+    frequencies = []
+    tmp = flat_ids
+    for _ in range(dims):
+        frequencies.append((tmp % base).to(dtype) - size)
+        tmp = torch.div(tmp, base, rounding_mode="floor")
+    return torch.stack(frequencies, dim=1)
+
+
 def power_spectrum(
     points: np.ndarray | torch.Tensor,
     size: int,
@@ -119,25 +136,38 @@ def power_spectrum(
         raise ValueError("spectrum-nd.h supports at most 16 dimensions")
 
     base = 2 * size + 1
-    frequencies = frequency_grid(size, dims, device=selected_device, dtype=dtype)
-    spectrum = torch.empty(frequencies.shape[0], dtype=dtype, device=selected_device)
+    volume = base**dims
+    output_dtype = np.float32 if dtype == torch.float32 else np.float64
+    spectrum_flat = np.empty(volume, dtype=output_dtype)
     angular_scale = -2.0 * math.pi
 
     with torch.no_grad():
-        for start in range(0, frequencies.shape[0], frequency_chunk_size):
-            stop = min(start + frequency_chunk_size, frequencies.shape[0])
-            angular_frequencies = angular_scale * frequencies[start:stop]
-            angles = torch.einsum("fd,snd->sfn", angular_frequencies, point_tensor)
+        for start in range(0, volume, frequency_chunk_size):
+            stop = min(start + frequency_chunk_size, volume)
+            flat_ids = torch.arange(start, stop, device="cpu")
+            frequencies = _frequency_grid_from_flat_ids(
+                flat_ids,
+                size,
+                dims,
+                dtype,
+            ).to(selected_device)
+            angular_frequencies = angular_scale * frequencies
+            angles = torch.einsum(
+                "fd,snd->sfn",
+                angular_frequencies,
+                point_tensor,
+            )
             real = torch.cos(angles).sum(dim=2)
             imaginary = torch.sin(angles).sum(dim=2)
             power = real * real + imaginary * imaginary
-            spectrum[start:stop] = power.sum(dim=0) / (set_count * point_count)
+            spectrum_chunk = power.sum(dim=0) / (set_count * point_count)
+            spectrum_flat[start:stop] = spectrum_chunk.cpu().numpy()
 
-    spectrum_np = spectrum.cpu().numpy().reshape((base,) * dims, order="F")
+    spectrum_np = spectrum_flat.reshape((base,) * dims, order="F")
     if not return_frequencies:
         return spectrum_np
 
-    frequencies_np = frequencies.cpu().numpy()
+    frequencies_np = frequency_grid(size, dims, device="cpu", dtype=dtype).cpu().numpy()
     return spectrum_np, frequencies_np
 
 
